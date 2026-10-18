@@ -4,13 +4,14 @@ Describe a Discord bot in plain English. The AI writes its personality, switches
 needs and creates its slash commands. You fine-tune everything in a web dashboard and press **Start**,
 and the bot runs 24/7 for as long as the server is up.
 
-![modules](docs/modules.png)
+![overview](docs/overview.png)
 
 ## What a bot can do
 
 | Module | What it does | Commands |
 |---|---|---|
-| 💬 AI Chat | Talks in its persona when @mentioned, in DMs, or in "always-on" channels, and remembers the recent conversation | `/ask` `/reset` |
+| 💬 AI Chat | Talks in its persona when @mentioned, in DMs, or in "always-on" channels. Remembers the conversation, can **search the web** and **see images** | `/ask` `/reset` |
+| 🧠 Knowledge base | Paste or upload FAQs, rules and docs; the bot answers from them (prompt-cached, so big docs stay cheap) | — |
 | ⚡ Auto Replies | Trigger → reply rules (contains / exact / starts with / regex), optionally AI-written | — |
 | 🛡️ Moderation | Banned words, invite/link blocking, anti-spam, AI moderation; delete, warn or time out; mod log | `/warn` `/warnings` `/timeout` `/purge` |
 | 👋 Welcome | Greets new members (fixed template or AI-written) and gives an auto-role | — |
@@ -18,15 +19,23 @@ and the bot runs 24/7 for as long as the server is up.
 | 🎫 Tickets | Private support channels for the member and staff | `/ticket open` `/ticket close` |
 | 🎉 Giveaways | Button-entry giveaways that end on their own | `/giveaway start/end/reroll` |
 | 🪙 Economy | Server currency | `/balance` `/daily` `/work` `/pay` `/richest` |
+| 🏷️ Self Roles | Button panels members click to give themselves roles | `/selfroles` |
+| ⏰ Reminders | Personal reminders that survive restarts | `/remind` `/reminders` |
+| 📜 Server Log | Joins, leaves, deleted and edited messages in a log channel | — |
+| ⭐ Starboard | Reposts messages that collect enough ⭐ reactions | — |
 | ✨ Custom commands | Your own slash commands: fixed text, or a prompt the AI answers in persona | anything |
 
 Every bot also gets `/help`. Channels and roles can be set by **name** (`welcome`, `Moderators`) or by ID,
 which is how the AI builder can wire things up without knowing your server's IDs.
 
 The dashboard also has:
+- **6 templates** (Community Manager, Support Desk, Moderation Guardian, Study Buddy, Gaming Hype, Roleplay Character). They work even before you add an AI key.
 - **Edit with AI**: "make it talk like a knight and add a /quest command" turns into a reviewed draft you can save.
 - **Playground**: chat with the persona, including unsaved edits, without touching Discord.
-- **Live logs** for each bot, plus JSON **export/import**. Exports never include the token.
+- **Activity and cost**: messages, AI replies, commands and estimated AI spend per day, with a **daily AI reply cap** per bot.
+- **Discord profile sync**: push the bot's name and avatar to Discord from the dashboard.
+- **Own the code**: download any bot as a standalone Node.js project (with README and Dockerfile) that runs without Botsmith.
+- **Live logs**, **duplicate**, and JSON **export/import**. Exports never include the token.
 
 ## Quick start
 
@@ -42,7 +51,7 @@ Then in the dashboard:
 
 1. **+ New bot** → describe it → **Build with AI** (or start from scratch).
 2. Create an application at <https://discord.com/developers/applications>. Under **Bot**, click **Reset Token**, copy it and paste it into the bot.
-3. On the same **Bot** page, turn on **Message Content Intent**, plus **Server Members Intent** if you use Welcome.
+3. On the same **Bot** page, turn on **Message Content Intent**, plus **Server Members Intent** if you use Welcome or member logging.
 4. Click **Add to server** in the dashboard to invite the bot with the right permissions, then **Start**.
 
 Changes you save apply to a running bot immediately. If a change needs different gateway intents, the
@@ -64,7 +73,8 @@ and set `SECURE_COOKIES=true`.
 
 ## AI models and cost
 
-Each bot picks its own model on the Persona tab: Claude Opus 5.5 (default, smartest), Sonnet 5.5
+The overview tab estimates spend from token usage, and every bot has a daily AI reply cap (500 by
+default). Each bot picks its own model on the Persona tab: Claude Opus 5.5 (default, smartest), Sonnet 5.5
 (balanced) or Haiku 5.5 (fastest, cheapest). It also picks a thinking effort level. The AI builder
 uses Opus 5.5, and AI moderation uses Haiku 5.5 because it runs on every message. Set a monthly
 spend limit in the Anthropic console.
@@ -84,7 +94,11 @@ src/ai.js              Claude: bot chat, the AI builder (structured output), AI 
 src/schema.js          the bot spec: one JSON document per bot, validated with zod
 src/manager.js         starts/stops bots, status, logs
 src/runtime/bot.js     one discord.js client per bot; routes messages and commands to modules
-src/runtime/modules/   ai-chat, auto-replies, moderation, welcome, leveling, tickets, giveaways, economy, custom-commands
+src/runtime/modules/   ai-chat, auto-replies, moderation, welcome, leveling, tickets, giveaways, economy,
+                       self-roles, reminders, logging, starboard, custom-commands
+src/templates.js       ready-made bots
+src/standalone.js      runs one exported bot without the dashboard
+src/zip.js             builds the "own the code" download
 public/                the dashboard (vanilla JS, no build step)
 ```
 

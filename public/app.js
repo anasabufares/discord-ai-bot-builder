@@ -246,6 +246,8 @@ const MODULES = [
     body: (m) => [
       toggleRow("Reply when @mentioned", m, "replyToMentions"),
       toggleRow("Reply in DMs", m, "replyInDMs"),
+      toggleRow("Web search", m, "webSearch", "Looks up current info (news, scores, patch notes). About $0.01 per search."),
+      toggleRow("See images", m, "vision", "Reads screenshots and photos members attach."),
       field("Always-on channels", bindList(m, "channels", "ai-chat, general"), "The bot replies to every message here, no mention needed."),
       h("div", { class: "grid two" }, field("Memory (messages)", bindNumber(m, "historyLength")), field("Cooldown per user (seconds)", bindNumber(m, "cooldownSeconds"))),
     ],
@@ -340,6 +342,57 @@ const MODULES = [
     title: "Giveaways",
     blurb: "Button-entry giveaways with /giveaway start, end and reroll.",
     body: () => [h("div", { class: "muted small" }, "No settings needed. Members with Manage Server can run giveaways.")],
+  },
+  {
+    key: "selfRoles",
+    icon: "🏷️",
+    title: "Self Roles",
+    blurb: "Button panels members click to give themselves roles. Post them with /selfroles.",
+    body: (m) => [
+      repeater(m, "panels", {
+        addLabel: "Add panel",
+        blank: { title: "Pick your roles", description: "", roles: [] },
+        renderItem: (p) => [
+          field("Panel title", bindText(p, "title")),
+          field("Description", bindText(p, "description", { multiline: true, rows: 2 })),
+          repeater(p, "roles", {
+            addLabel: "Add role button",
+            blank: { role: "", label: "", emoji: "" },
+            renderItem: (r) => h("div", { class: "grid three" }, field("Role", bindText(r, "role", { placeholder: "Gamer" })), field("Button label", bindText(r, "label")), field("Emoji", bindText(r, "emoji", { placeholder: "🎮" }))),
+          }),
+        ],
+      }),
+      h("div", { class: "muted small" }, "The bot's role must sit above these roles in Server Settings → Roles."),
+    ],
+  },
+  {
+    key: "reminders",
+    icon: "⏰",
+    title: "Reminders",
+    blurb: "Members set personal reminders with /remind and manage them with /reminders.",
+    body: () => [h("div", { class: "muted small" }, "No settings needed. Each member can have up to 25 reminders.")],
+  },
+  {
+    key: "logging",
+    icon: "📜",
+    title: "Server Log",
+    blurb: "Posts joins, leaves, deleted and edited messages to a log channel.",
+    body: (m) => [
+      field("Log channel", bindText(m, "channel", { placeholder: "mod-log" }), CHANNEL_HINT),
+      toggleRow("Member joins", m, "memberJoins"),
+      toggleRow("Member leaves", m, "memberLeaves"),
+      toggleRow("Deleted messages", m, "messageDeletes"),
+      toggleRow("Edited messages", m, "messageEdits"),
+    ],
+  },
+  {
+    key: "starboard",
+    icon: "⭐",
+    title: "Starboard",
+    blurb: "Reposts messages that get enough star reactions to a hall-of-fame channel.",
+    body: (m) => [
+      h("div", { class: "grid three" }, field("Channel", bindText(m, "channel", { placeholder: "starboard" })), field("Emoji", bindText(m, "emoji")), field("Reactions needed", bindNumber(m, "threshold"))),
+    ],
   },
   {
     key: "economy",
@@ -465,7 +518,33 @@ function renderNewBot() {
     h("div", { class: "chips", style: "justify-content:center;max-width:760px;margin:18px auto 0" }, EXAMPLES.map((ex) => h("button", { class: "chip", type: "button", onclick: () => (desc.value = ex) }, ex))),
   );
 
-  return [hero, state.generated && renderPreview(state.generated)];
+  const templates = h(
+    "div",
+    { class: "templates" },
+    h("h2", {}, "Or start from a template"),
+    h(
+      "div",
+      { class: "template-grid" },
+      state.meta.templates.map((t) =>
+        h(
+          "button",
+          {
+            class: "template",
+            type: "button",
+            onclick: () => {
+              state.generated = clone(t.spec);
+              renderMain();
+              document.querySelector(".preview")?.scrollIntoView({ behavior: "smooth" });
+            },
+          },
+          h("div", { class: "template-icon" }, t.icon),
+          h("div", {}, h("div", { class: "template-title" }, t.title), h("div", { class: "muted small" }, t.blurb)),
+        ),
+      ),
+    ),
+  );
+
+  return [hero, state.generated && renderPreview(state.generated), templates];
 }
 
 function renderPreview(spec) {
@@ -482,7 +561,7 @@ function renderPreview(spec) {
 
   return h(
     "div",
-    { class: "card", style: "max-width:760px;margin:28px auto 0" },
+    { class: "card preview", style: "max-width:760px;margin:28px auto 0" },
     h("div", { class: "card-head" }, h("div", { class: "avatar lg" }, initial(spec.name)), h("div", { class: "title" }, h("h2", {}, spec.name), h("div", { class: "muted" }, spec.description))),
     h(
       "div",
@@ -499,6 +578,7 @@ function renderPreview(spec) {
 const TABS = [
   ["overview", "Overview"],
   ["persona", "Persona"],
+  ["knowledge", "Knowledge"],
   ["modules", "Modules"],
   ["commands", "Commands"],
   ["playground", "Playground"],
@@ -552,7 +632,7 @@ function renderBot(bot) {
     ),
   );
 
-  const body = { overview: tabOverview, persona: tabPersona, modules: tabModules, commands: tabCommands, playground: tabPlayground, logs: tabLogs, settings: tabSettings }[state.tab](bot);
+  const body = { overview: tabOverview, persona: tabPersona, knowledge: tabKnowledge, modules: tabModules, commands: tabCommands, playground: tabPlayground, logs: tabLogs, settings: tabSettings }[state.tab](bot);
   return [header, s.state === "error" && h("div", { class: "notice error", style: "margin-top:16px" }, s.error), tabs, body];
 }
 
@@ -580,6 +660,7 @@ function tabOverview(bot) {
   return h(
     "div",
     { class: "grid" },
+    statsCard(bot),
     h(
       "div",
       { class: "card" },
@@ -613,6 +694,76 @@ function tabOverview(bot) {
   );
 }
 
+function statsCard(bot) {
+  const card = h("div", { class: "card" }, h("div", { class: "muted small" }, "Loading activity…"));
+  api(`/bots/${bot.id}/stats`)
+    .then((data) => {
+      const t = data.days.at(-1);
+      const month = data.days.reduce((n, d) => n + d.cost, 0);
+      const money = (n) => (n < 0.01 && n > 0 ? "<$0.01" : `$${n.toFixed(2)}`);
+      const tile = (label, value, sub) => h("div", { class: "stat" }, h("div", { class: "stat-label" }, label), h("div", { class: "stat-value" }, value), sub && h("div", { class: "muted small" }, sub));
+      card.replaceChildren(
+        h("div", { class: "row between" }, h("h2", {}, "Activity"), h("span", { class: "muted small" }, "Today, UTC")),
+        h(
+          "div",
+          { class: "stats" },
+          tile("Messages seen", t.messages.toLocaleString()),
+          tile("AI replies", t.aiReplies.toLocaleString(), data.dailyLimit ? `of ${data.dailyLimit.toLocaleString()} daily limit` : "no daily limit"),
+          tile("Commands used", t.commands.toLocaleString()),
+          tile("AI cost today", money(t.cost), `${money(month)} last 30 days`),
+        ),
+        costChart(data.days),
+      );
+    })
+    .catch(() => card.replaceChildren(h("div", { class: "muted small" }, "Activity unavailable.")));
+  return card;
+}
+
+// 30 daily bars of estimated AI spend. Single series, so no legend: the title names it.
+function costChart(days) {
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = (tag, attrs = {}, ...kids) => {
+    const el = document.createElementNS(NS, tag);
+    for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+    el.append(...kids);
+    return el;
+  };
+  const W = 600, H = 120, pad = 18;
+  const max = Math.max(...days.map((d) => d.cost), 0.0001);
+  const step = W / days.length;
+  const barW = Math.max(2, step - 2); // 2px gap between bars
+  const tip = h("div", { class: "chart-tip", hidden: true });
+  const bars = days.map((d, i) => {
+    const bh = d.cost > 0 ? Math.max(2, ((H - pad) * d.cost) / max) : 0;
+    const x = i * step + 1;
+    const g = svg("g", { class: "bar" },
+      svg("rect", { x, y: 0, width: step, height: H, fill: "transparent" }), // full-height hit target
+      bh ? svg("path", { d: roundedTop(x, H - bh, barW, bh, Math.min(4, barW / 2)), fill: "var(--chart)" }) : svg("rect", { x, y: H - 1, width: barW, height: 1, fill: "var(--line)" }),
+    );
+    const show = () => {
+      tip.hidden = false;
+      tip.textContent = `${new Date(`${d.day}T00:00:00Z`).toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" })}: $${d.cost.toFixed(3)} · ${d.aiReplies} AI replies`;
+      tip.style.left = `${((x + step / 2) / W) * 100}%`;
+    };
+    g.addEventListener("mouseenter", show);
+    g.addEventListener("mouseleave", () => (tip.hidden = true));
+    return g;
+  });
+  const chart = svg("svg", { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: "none", class: "chart", role: "img", "aria-label": "Estimated AI cost per day for the last 30 days" }, ...bars);
+  return h(
+    "div",
+    { class: "chart-wrap" },
+    h("div", { class: "row between" }, h("h3", {}, "AI cost per day"), h("span", { class: "muted small" }, `peak $${max.toFixed(2)}`)),
+    h("div", { class: "chart-box" }, chart, tip),
+    h("div", { class: "row between muted small" }, h("span", {}, "30 days ago"), h("span", {}, "today")),
+  );
+}
+
+function roundedTop(x, y, w, h, r) {
+  r = Math.min(r, h);
+  return `M${x},${y + h} V${y + r} Q${x},${y} ${x + r},${y} H${x + w - r} Q${x + w},${y} ${x + w},${y + r} V${y + h} Z`;
+}
+
 function tabPersona() {
   const p = state.draft.persona;
   const models = [
@@ -632,6 +783,84 @@ function tabPersona() {
       field("AI model", bindSelect(p, "model", models)),
       field("Thinking effort", bindSelect(p, "effort", [["low", "Low: quick, casual replies"], ["medium", "Medium: helpful answers"], ["high", "High: careful, expert answers"]])),
     ),
+    field("Daily AI reply limit", bindNumber(state.draft, "limits.dailyAiReplies"), "Caps cost. When reached, the bot politely says it's resting until tomorrow. 0 = unlimited."),
+    profileSync(),
+  );
+}
+
+function profileSync() {
+  const bot = selected();
+  const url = h("input", { type: "text", placeholder: "https://… image URL (optional)" });
+  const sync = h("button", { class: "btn" }, "Sync name & avatar to Discord");
+  sync.onclick = () =>
+    busy(sync, async () => {
+      if (state.dirty) await save();
+      await api(`/bots/${bot.id}/sync-profile`, { method: "POST", body: { avatarUrl: url.value } });
+      await refreshBots();
+      render();
+      toast("Profile updated on Discord");
+    });
+  return h(
+    "div",
+    { class: "subcard grid" },
+    h("h3", {}, "Discord profile"),
+    h("div", { class: "muted small" }, "Sets the bot account's username to the name above, and its avatar to the image URL. The bot must be running. Discord allows about 2 changes per hour."),
+    h("div", { class: "row nowrap" }, url, sync),
+  );
+}
+
+function tabKnowledge() {
+  const k = state.draft.knowledge;
+  const LIMIT = 200_000;
+  const counter = h("span", { class: "muted small" });
+  const toggle = bindSwitch(k, "enabled");
+  // Adding material implies the user wants it used.
+  const autoEnable = () => {
+    if (k.enabled) return;
+    k.enabled = true;
+    toggle.querySelector("input").checked = true;
+  };
+  const updateCount = () => {
+    const used = k.documents.reduce((n, d) => n + d.content.length, 0);
+    counter.textContent = `${used.toLocaleString()} / ${LIMIT.toLocaleString()} characters`;
+  };
+  updateCount();
+
+  const file = h("input", { type: "file", accept: ".txt,.md,.csv,.json,text/*", multiple: true, style: "display:none" });
+  const list = h("div");
+  const draw = () =>
+    list.replaceChildren(
+      repeater(k, "documents", {
+        addLabel: "Add document",
+        blank: { title: "", content: "" },
+        renderItem: (d) => {
+          const area = bindText(d, "content", { multiline: true, rows: 8, placeholder: "Paste rules, FAQs, product info, links…" });
+          area.addEventListener("input", () => (updateCount(), autoEnable()));
+          return [field("Title", bindText(d, "title", { placeholder: "Server rules" })), field("Content", area)];
+        },
+      }),
+    );
+  file.onchange = async () => {
+    for (const f of file.files) k.documents.push({ title: f.name.replace(/\.[^.]+$/, ""), content: await f.text() });
+    k.enabled = true;
+    file.value = "";
+    markDirty();
+    renderMain();
+  };
+  draw();
+
+  return h(
+    "div",
+    { class: "card grid" },
+    h(
+      "div",
+      { class: "card-head" },
+      h("div", { class: "icon" }, "🧠"),
+      h("div", { class: "title" }, h("h3", {}, "Knowledge base"), h("div", { class: "muted small" }, "The bot reads these before every reply and answers from them. It's cached, so a large knowledge base costs about 10% after the first message.")),
+      toggle,
+    ),
+    h("div", { class: "row between" }, counter, h("button", { class: "btn", onclick: () => file.click() }, "⬆ Upload text files"), file),
+    list,
   );
 }
 
@@ -664,6 +893,8 @@ const BUILTINS = {
   tickets: ["ticket open", "ticket close"],
   giveaways: ["giveaway start", "giveaway end", "giveaway reroll"],
   economy: ["balance", "daily", "work", "pay", "richest"],
+  selfRoles: ["selfroles"],
+  reminders: ["remind", "reminders"],
 };
 
 function tabCommands() {
@@ -747,6 +978,18 @@ function tabLogs(bot) {
   return box;
 }
 
+function duplicateButton(bot) {
+  const b = h("button", { class: "btn" }, "⧉ Duplicate bot");
+  b.onclick = () =>
+    busy(b, async () => {
+      const copy = await api(`/bots/${bot.id}/duplicate`, { method: "POST", body: {} });
+      await refreshBots();
+      selectBot(copy.id);
+      toast(`Created ${copy.spec.name}`);
+    });
+  return b;
+}
+
 function tabSettings(bot) {
   const token = h("input", { type: "password", placeholder: bot.hasToken ? "•••••••• saved (paste a new one to replace)" : "Paste bot token", autocomplete: "off" });
   const saveToken = h("button", { class: "btn primary" }, "Save token");
@@ -795,6 +1038,13 @@ function tabSettings(bot) {
       h("h2", {}, "Backup"),
       h("p", { class: "muted", style: "margin:0" }, "Export the configuration (without the token) or import one."),
       h("div", { class: "row" }, h("a", { class: "btn", href: `/api/bots/${bot.id}/export` }, "⬇ Export JSON"), h("button", { class: "btn", onclick: () => file.click() }, "⬆ Import JSON"), file),
+    ),
+    h(
+      "div",
+      { class: "card grid" },
+      h("h2", {}, "Own the code"),
+      h("p", { class: "muted", style: "margin:0" }, "Download this bot as a standalone Node.js project you can host anywhere, with no dashboard needed. Includes a README and Dockerfile."),
+      h("div", { class: "row" }, h("a", { class: "btn primary", href: `/api/bots/${bot.id}/export-code` }, "⬇ Download source code (.zip)"), duplicateButton(bot)),
     ),
     h("div", { class: "card grid" }, h("h2", {}, "Danger zone"), h("div", { class: "row" }, del)),
   );

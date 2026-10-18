@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
@@ -8,7 +9,9 @@ import { config } from "./config.js";
 import { createCipher, createSessions, safeEqual } from "./crypto.js";
 import { BotManager, clientIdFromToken, inviteUrl } from "./manager.js";
 import { DEFAULT_SPEC, MODELS, normalizeSpec } from "./schema.js";
-import { Store } from "./store.js";
+import { Store, dayStats, recordUsage, today } from "./store.js";
+import { TEMPLATES } from "./templates.js";
+import { createZip } from "./zip.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const store = new Store(config.dataDir);
@@ -110,7 +113,7 @@ function applyToken(record, token) {
   return true;
 }
 
-app.get("/api/meta", (req, res) => res.json({ aiConfigured: aiConfigured(), models: MODELS, defaults: DEFAULT_SPEC }));
+app.get("/api/meta", (req, res) => res.json({ aiConfigured: aiConfigured(), models: MODELS, defaults: DEFAULT_SPEC, templates: TEMPLATES }));
 
 app.get("/api/bots", (req, res) => res.json(store.listBots().map(view)));
 
@@ -148,6 +151,15 @@ app.put("/api/bots/:id", async (req, res) => {
   res.json(view(record));
 });
 
+app.post("/api/bots/:id/duplicate", (req, res) => {
+  const record = findBot(req, res);
+  if (!record) return;
+  const now = new Date().toISOString();
+  const copy = { id: crypto.randomUUID(), spec: { ...structuredClone(record.spec), name: `${record.spec.name} (copy)`.slice(0, 80) }, running: false, createdAt: now, updatedAt: now };
+  store.putBot(copy);
+  res.status(201).json(view(copy));
+});
+
 app.delete("/api/bots/:id", async (req, res) => {
   const record = findBot(req, res);
   if (!record) return;
@@ -174,6 +186,30 @@ app.get("/api/bots/:id/logs", (req, res) => {
   if (findBot(req, res)) res.json(manager.getLogs(req.params.id));
 });
 
+// Last 30 days of activity and AI spend.
+app.get("/api/bots/:id/stats", (req, res) => {
+  const record = findBot(req, res);
+  if (!record) return;
+  const file = store.state(record.id);
+  dayStats(file); // make sure today exists
+  const days = [];
+  for (let i = 29; i >= 0; i--) {
+    const day = new Date(Date.now() - i * 864e5).toISOString().slice(0, 10);
+    days.push({ day, ...(file.data.stats?.[day] ?? { messages: 0, aiReplies: 0, commands: 0, joins: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, cost: 0 }) });
+  }
+  res.json({ today: today(), days, dailyLimit: record.spec.limits.dailyAiReplies });
+});
+
+// Push the bot's name and avatar to its Discord account.
+app.post("/api/bots/:id/sync-profile", async (req, res) => {
+  const record = findBot(req, res);
+  if (!record) return;
+  const avatarUrl = String(req.body?.avatarUrl ?? "").trim();
+  if (avatarUrl && !/^https:\/\/\S+$/i.test(avatarUrl)) return res.status(400).json({ error: "The avatar must be an https:// image URL." });
+  await manager.syncProfile(record.id, { username: record.spec.name, avatarUrl: avatarUrl || null });
+  res.json(view(record));
+});
+
 // Playground: talk to the bot's persona (optionally with unsaved edits) without Discord.
 app.post("/api/bots/:id/test", async (req, res) => {
   const record = findBot(req, res);
@@ -183,7 +219,11 @@ app.post("/api/bots/:id/test", async (req, res) => {
   const valid = messages.every((m) => ["user", "assistant"].includes(m?.role) && typeof m.content === "string" && m.content.length <= 4000);
   if (!messages.length || !valid || messages.at(-1).role !== "user") return res.status(400).json({ error: "Invalid conversation." });
   while (messages.length && messages[0].role !== "user") messages.shift();
-  const reply = await chat(spec, messages.map((m) => ({ role: m.role, content: m.role === "user" ? `You: ${m.content}` : m.content })));
+  const reply = await chat(
+    spec,
+    messages.map((m) => ({ role: m.role, content: m.role === "user" ? `You: ${m.content}` : m.content })),
+    { onUsage: (model, usage, cost) => recordUsage(store.state(record.id), usage, cost) },
+  );
   res.json({ reply });
 });
 
@@ -193,6 +233,42 @@ app.get("/api/bots/:id/export", (req, res) => {
   if (!record) return;
   const filename = `${record.spec.name.replace(/[^a-z0-9]+/gi, "-").toLowerCase() || "bot"}.json`;
   res.set("Content-Disposition", `attachment; filename="${filename}"`).json({ format: "discord-ai-bot-builder/v1", spec: record.spec });
+});
+
+// "You own the code": a ready-to-run project containing just this bot and the runtime.
+const ROOT = path.join(here, "..");
+function walk(dir) {
+  return fs.readdirSync(path.join(ROOT, dir), { withFileTypes: true }).flatMap((e) =>
+    e.isDirectory() ? walk(path.join(dir, e.name)) : [path.join(dir, e.name).split(path.sep).join("/")],
+  );
+}
+
+app.get("/api/bots/:id/export-code", (req, res) => {
+  const record = findBot(req, res);
+  if (!record) return;
+  const slug = record.spec.name.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").toLowerCase() || "bot";
+  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
+  const { express, ...deps } = pkg.dependencies;
+  const sources = ["src/ai.js", "src/schema.js", "src/store.js", "src/standalone.js", ...walk("src/runtime")];
+  const files = [
+    ...sources.map((name) => ({ name, data: fs.readFileSync(path.join(ROOT, name)) })),
+    { name: "bot.json", data: JSON.stringify({ format: "discord-ai-bot-builder/v1", spec: record.spec }, null, 2) },
+    {
+      name: "package.json",
+      data: JSON.stringify({ name: slug, version: "1.0.0", private: true, type: "module", engines: pkg.engines, scripts: { start: "node src/standalone.js" }, dependencies: deps }, null, 2),
+    },
+    { name: ".env.example", data: "DISCORD_TOKEN=\nANTHROPIC_API_KEY=sk-ant-...\nDATA_DIR=./data\n" },
+    { name: ".gitignore", data: "node_modules/\ndata/\n.env\n" },
+    {
+      name: "Dockerfile",
+      data: 'FROM node:22-alpine\nWORKDIR /app\nCOPY package*.json ./\nRUN npm install --omit=dev\nCOPY . .\nRUN mkdir -p /data && chown node:node /data\nENV DATA_DIR=/data\nVOLUME /data\nUSER node\nCMD ["node", "src/standalone.js"]\n',
+    },
+    {
+      name: "README.md",
+      data: `# ${record.spec.name}\n\n${record.spec.description}\n\nExported from Botsmith. This folder is a complete Discord bot that you own.\n\n## Run it\n\n\`\`\`bash\nnpm install\ncp .env.example .env   # set DISCORD_TOKEN and ANTHROPIC_API_KEY\nnpm start\n\`\`\`\n\nIn the Discord Developer Portal → Bot, turn on Message Content Intent (and Server Members Intent if Welcome or member logging is on).\n\n## Change it\n\nEdit \`bot.json\` and restart. It's the same format the Botsmith dashboard imports and exports. The behaviour lives in \`src/runtime/\`.\n`,
+    },
+  ];
+  res.set({ "Content-Type": "application/zip", "Content-Disposition": `attachment; filename="${slug}.zip"` }).send(createZip(files.map((f) => ({ ...f, name: `${slug}/${f.name}` }))));
 });
 
 app.use("/api", (req, res) => res.status(404).json({ error: "Not found." }));

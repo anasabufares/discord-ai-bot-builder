@@ -24,6 +24,14 @@ export const BotSpec = z.object({
     channels: z.array(ref).describe("Channels where the bot replies to every message without being mentioned"),
     historyLength: z.number().int().describe("How many recent messages per channel the bot remembers (2-50)"),
     cooldownSeconds: z.number().int().describe("Per-user cooldown between AI replies (0-60)"),
+    webSearch: z.boolean().describe("Let the AI search the web for current information (news, scores, prices, docs)"),
+    vision: z.boolean().describe("Let the AI look at images members attach"),
+  }),
+  knowledge: z.object({
+    enabled: z.boolean(),
+    documents: z
+      .array(z.object({ title: z.string(), content: z.string() }))
+      .describe("Reference material the bot answers from: FAQs, rules, product info. Draft a starter FAQ only from facts in the description"),
   }),
   autoReplies: z.object({
     enabled: z.boolean(),
@@ -74,6 +82,31 @@ export const BotSpec = z.object({
     openMessage: z.string().describe("First message in a new ticket. Supports {user}"),
   }),
   giveaways: z.object({ enabled: z.boolean() }),
+  selfRoles: z.object({
+    enabled: z.boolean(),
+    panels: z.array(
+      z.object({
+        title: z.string(),
+        description: z.string(),
+        roles: z.array(z.object({ role: ref, label: z.string(), emoji: z.string().describe("A single unicode emoji, or empty") })),
+      }),
+    ).describe("Button panels members click to give themselves roles. Admins post them with /selfroles"),
+  }),
+  reminders: z.object({ enabled: z.boolean() }),
+  logging: z.object({
+    enabled: z.boolean(),
+    channel: ref,
+    memberJoins: z.boolean(),
+    memberLeaves: z.boolean(),
+    messageDeletes: z.boolean(),
+    messageEdits: z.boolean(),
+  }),
+  starboard: z.object({
+    enabled: z.boolean(),
+    channel: ref,
+    emoji: z.string(),
+    threshold: z.number().int().describe("Reactions needed to reach the starboard (1-50)"),
+  }),
   economy: z.object({
     enabled: z.boolean(),
     currencyName: z.string(),
@@ -92,6 +125,9 @@ export const BotSpec = z.object({
       inputDescription: z.string(),
     }),
   ),
+  limits: z.object({
+    dailyAiReplies: z.number().int().describe("Max AI replies per day across all servers, to cap cost. 0 = unlimited"),
+  }),
 });
 
 export const DEFAULT_SPEC = {
@@ -103,7 +139,17 @@ export const DEFAULT_SPEC = {
     effort: "low",
     statusText: "Chatting with the server",
   },
-  aiChat: { enabled: true, replyToMentions: true, replyInDMs: true, channels: [], historyLength: 20, cooldownSeconds: 3 },
+  aiChat: {
+    enabled: true,
+    replyToMentions: true,
+    replyInDMs: true,
+    channels: [],
+    historyLength: 20,
+    cooldownSeconds: 3,
+    webSearch: false,
+    vision: true,
+  },
+  knowledge: { enabled: false, documents: [] },
   autoReplies: { enabled: false, rules: [] },
   moderation: {
     enabled: false,
@@ -128,9 +174,16 @@ export const DEFAULT_SPEC = {
   },
   tickets: { enabled: false, category: "", staffRole: "", openMessage: "Hi {user}, thanks for reaching out. Staff will be with you shortly." },
   giveaways: { enabled: false },
+  selfRoles: { enabled: false, panels: [] },
+  reminders: { enabled: false },
+  logging: { enabled: false, channel: "", memberJoins: true, memberLeaves: true, messageDeletes: true, messageEdits: true },
+  starboard: { enabled: false, channel: "starboard", emoji: "⭐", threshold: 3 },
   economy: { enabled: false, currencyName: "coins", currencyEmoji: "🪙", dailyAmount: 100, workMin: 20, workMax: 80 },
   customCommands: [],
+  limits: { dailyAiReplies: 500 },
 };
+
+export const KNOWLEDGE_LIMIT = 200_000; // characters across all documents
 
 const clamp = (n, lo, hi, fallback) => (Number.isFinite(n) ? Math.min(hi, Math.max(lo, Math.round(n))) : fallback);
 
@@ -148,7 +201,7 @@ function deepMerge(base, over) {
 
 export const RESERVED_COMMANDS = new Set([
   "ask", "reset", "help", "rank", "leaderboard", "ticket", "giveaway", "balance", "daily", "work", "pay",
-  "richest", "warn", "warnings", "purge", "timeout",
+  "richest", "warn", "warnings", "purge", "timeout", "selfroles", "remind", "reminders",
 ]);
 
 export function slugCommand(name) {
@@ -180,6 +233,30 @@ export function normalizeSpec(input) {
   spec.autoReplies.rules = spec.autoReplies.rules
     .filter((r) => r.trigger && r.response)
     .map((r) => ({ ...r, trigger: r.trigger.slice(0, 200) }));
+
+  spec.starboard.threshold = clamp(spec.starboard.threshold, 1, 50, 3);
+  spec.starboard.emoji = spec.starboard.emoji.trim() || "⭐";
+  spec.limits.dailyAiReplies = clamp(spec.limits.dailyAiReplies, 0, 1e6, d.limits.dailyAiReplies);
+
+  let budget = KNOWLEDGE_LIMIT;
+  spec.knowledge.documents = spec.knowledge.documents
+    .filter((doc) => doc.content.trim())
+    .map((doc) => {
+      const content = doc.content.slice(0, Math.max(0, budget));
+      budget -= content.length;
+      return { title: doc.title.trim().slice(0, 120) || "Untitled", content };
+    })
+    .filter((doc) => doc.content);
+
+  // Discord allows 5 rows of 5 buttons per message.
+  spec.selfRoles.panels = spec.selfRoles.panels
+    .map((p) => ({
+      title: p.title.slice(0, 256) || "Pick your roles",
+      description: p.description.slice(0, 2000),
+      roles: p.roles.filter((r) => r.role.trim()).slice(0, 25).map((r) => ({ role: r.role.trim(), label: (r.label || r.role).slice(0, 80), emoji: r.emoji.trim() })),
+    }))
+    .filter((p) => p.roles.length)
+    .slice(0, 10);
 
   // Discord rejects duplicate or malformed command names, so fix them here rather than at login.
   const seen = new Set(RESERVED_COMMANDS);

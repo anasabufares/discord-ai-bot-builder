@@ -76,3 +76,24 @@ export function guildState(file, guildId) {
   file.data.guilds[guildId] ??= { xp: {}, coins: {}, warnings: {}, tickets: {}, ticketCount: 0 };
   return file.data.guilds[guildId];
 }
+
+export const today = () => new Date().toISOString().slice(0, 10);
+
+// Per-day counters for the dashboard, kept for 90 days.
+export function dayStats(file, day = today()) {
+  const all = (file.data.stats ??= {});
+  if (!all[day]) {
+    all[day] = { messages: 0, aiReplies: 0, commands: 0, joins: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, cost: 0 };
+    for (const old of Object.keys(all).sort().slice(0, -90)) delete all[old];
+  }
+  return all[day];
+}
+
+export function recordUsage(file, usage, cost) {
+  const s = dayStats(file);
+  s.inputTokens += (usage.input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0);
+  s.cachedTokens += usage.cache_read_input_tokens ?? 0;
+  s.outputTokens += usage.output_tokens ?? 0;
+  s.cost += cost;
+  file.save();
+}

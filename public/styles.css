@@ -135,3 +135,29 @@ code { background: var(--panel-2); padding: 1px 6px; border-radius: 6px; font-si
   .sidebar .spacer { display: none; }
   main { padding-top: 18px; }
 }
+
+/* v2 additions */
+:root { --chart: #8b6dff; }
+.grid.three { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
+.row.nowrap { flex-wrap: nowrap; }
+.subcard { border: 1px solid var(--line); border-radius: 10px; padding: 14px; background: var(--bg); }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 14px 0 18px; }
+.stat { background: var(--panel-2); border-radius: 10px; padding: 12px 14px; }
+.stat-label { color: var(--muted); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+.stat-value { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; margin: 2px 0; }
+.chart-wrap { display: grid; gap: 8px; }
+.chart-box { position: relative; }
+.chart { width: 100%; height: 120px; display: block; }
+.chart .bar:hover path { filter: brightness(1.2); }
+.chart-tip { position: absolute; top: -6px; transform: translate(-50%, -100%); background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 4px 8px; font-size: 12px; white-space: nowrap; pointer-events: none; }
+.templates { max-width: 1000px; margin: 40px auto 0; }
+.templates h2 { text-align: center; margin-bottom: 16px; }
+.template-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+.template { display: flex; gap: 12px; align-items: flex-start; text-align: left; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; cursor: pointer; }
+.template:hover { border-color: var(--accent); }
+.template-icon { font-size: 26px; width: 44px; height: 44px; border-radius: 10px; background: var(--panel-2); display: grid; place-items: center; flex: none; }
+.template-title { font-weight: 600; margin-bottom: 2px; }
+.grid > .card + .card { margin-top: 0; }
+/* Let grid/flex children shrink so wide rows (tabs, chart) scroll instead of widening the page. */
+.shell > *, .bot-header .info, .grid > * { min-width: 0; }
+.bot-header h1 { overflow-wrap: anywhere; }

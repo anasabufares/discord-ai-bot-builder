@@ -115,6 +115,17 @@ export class BotManager {
     }
   }
 
+  async syncProfile(id, profile) {
+    const rt = this.runtimes.get(id);
+    if (!rt?.client?.isReady()) throw Object.assign(new Error("Start the bot first, then sync its profile."), { status: 409 });
+    try {
+      await rt.syncProfile(profile);
+    } catch (e) {
+      throw Object.assign(new Error(`Discord refused: ${e.message}. Name and avatar changes are rate-limited (about 2 per hour).`), { status: 400 });
+    }
+    this.log(id, "Profile synced to Discord");
+  }
+
   async startAll() {
     for (const record of this.store.listBots().filter((b) => b.running)) {
       await this.start(record.id).catch((e) => this.log(record.id, `Auto-start failed: ${e.message}`));

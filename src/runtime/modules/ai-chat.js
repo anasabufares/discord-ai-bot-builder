@@ -2,6 +2,7 @@ import { ChannelType, MessageFlags, SlashCommandBuilder } from "discord.js";
 import { channelMatches, splitMessage } from "../util.js";
 
 export const SAFE_MENTIONS = { parse: [], repliedUser: true };
+const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 
 // Per-channel short-term memory, kept in process (cleared on restart or with /reset).
 export function createAiChat(rt) {
@@ -27,9 +28,15 @@ export function createAiChat(rt) {
     return false;
   }
 
-  async function reply(channelId, speaker, text, extraSystem) {
-    const history = remember(channelId, "user", `${speaker}: ${text}`);
-    const answer = await rt.ai.chat(rt.spec, history.map((m) => ({ ...m })), { extraSystem });
+  // Images go only into the current turn: Discord attachment URLs expire, so memory keeps a text note.
+  async function reply(channelId, speaker, text, images = []) {
+    const note = images.length ? ` [attached ${images.length} image${images.length > 1 ? "s" : ""}]` : "";
+    const history = remember(channelId, "user", `${speaker}: ${text}${note}`).map((m) => ({ ...m }));
+    if (images.length) {
+      const last = history.at(-1);
+      last.content = [...images.map((url) => ({ type: "image", source: { type: "url", url } })), { type: "text", text: last.content }];
+    }
+    const answer = await rt.ai.chat(rt.spec, history);
     remember(channelId, "assistant", answer);
     return answer;
   }
@@ -57,10 +64,13 @@ export function createAiChat(rt) {
       if (!rt.spec.aiChat.enabled || !shouldReply(message)) return false;
       if (onCooldown(message.author.id)) return true;
       const text = message.content.replace(new RegExp(`<@!?${rt.client.user.id}>`, "g"), "").trim();
-      if (!text && message.attachments.size === 0) return false;
+      const images = rt.spec.aiChat.vision
+        ? message.attachments.filter((a) => IMAGE_TYPES.has(a.contentType?.split(";")[0])).first(4).map((a) => a.url)
+        : [];
+      if (!text && !images.length) return false;
 
       await message.channel.sendTyping().catch(() => {});
-      const answer = await reply(message.channel.id, message.member?.displayName ?? message.author.username, text || "(sent an attachment)");
+      const answer = await reply(message.channel.id, message.member?.displayName ?? message.author.username, text || "(no text)", images);
       const [first, ...rest] = splitMessage(answer);
       await message.reply({ content: first, allowedMentions: SAFE_MENTIONS });
       for (const part of rest) await message.channel.send({ content: part, allowedMentions: { parse: [] } });

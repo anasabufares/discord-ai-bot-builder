@@ -1,4 +1,6 @@
 import { ActivityType, Client, EmbedBuilder, Events, GatewayIntentBits, MessageFlags, Partials, SlashCommandBuilder } from "discord.js";
+import { LimitError } from "../ai.js";
+import { dayStats, recordUsage } from "../store.js";
 import { createAiChat } from "./modules/ai-chat.js";
 import { createAutoReplies } from "./modules/auto-replies.js";
 import { createCustomCommands } from "./modules/custom-commands.js";
@@ -8,15 +10,24 @@ import { createLeveling } from "./modules/leveling.js";
 import { createModeration } from "./modules/moderation.js";
 import { createTickets } from "./modules/tickets.js";
 import { createWelcome } from "./modules/welcome.js";
+import { createLogging } from "./modules/logging.js";
+import { createReminders } from "./modules/reminders.js";
+import { createSelfRoles } from "./modules/self-roles.js";
+import { createStarboard } from "./modules/starboard.js";
+
 
 // Ask Discord only for the gateway intents the enabled modules need.
 // MessageContent and GuildMembers are "privileged": they must also be switched on in the Developer Portal.
 export function intentsFor(spec) {
   const intents = [GatewayIntentBits.Guilds];
-  const readsMessages = spec.aiChat.enabled || spec.autoReplies.enabled || spec.moderation.enabled || spec.leveling.enabled;
+  const log = spec.logging;
+  const readsMessages =
+    spec.aiChat.enabled || spec.autoReplies.enabled || spec.moderation.enabled || spec.leveling.enabled || spec.starboard.enabled ||
+    (log.enabled && (log.messageDeletes || log.messageEdits));
   if (readsMessages) intents.push(GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent);
   if (spec.aiChat.enabled && spec.aiChat.replyInDMs) intents.push(GatewayIntentBits.DirectMessages);
-  if (spec.welcome.enabled) intents.push(GatewayIntentBits.GuildMembers);
+  if (spec.welcome.enabled || (log.enabled && (log.memberJoins || log.memberLeaves))) intents.push(GatewayIntentBits.GuildMembers);
+  if (spec.starboard.enabled) intents.push(GatewayIntentBits.GuildMessageReactions);
   return intents;
 }
 
@@ -28,8 +39,22 @@ const FRIENDLY_ERRORS = {
 
 export class BotRuntime {
   constructor({ id, spec, token, ai, state, log, onStatus }) {
-    Object.assign(this, { id, spec, token, ai, state, log, onStatus });
+    Object.assign(this, { id, spec, token, state, log, onStatus });
     this.client = null;
+
+    // Every AI call goes through here so usage is counted and the daily cap is enforced.
+    const onUsage = (model, usage, cost) => this.recordUsage(usage, cost);
+    this.ai = {
+      chat: (spec, messages, opts = {}) => {
+        const limit = this.spec.limits.dailyAiReplies;
+        if (limit && this.stats().aiReplies >= limit) {
+          throw new ai.LimitError("I've reached my daily limit for AI replies. Try again tomorrow!");
+        }
+        this.bump("aiReplies");
+        return ai.chat(spec, messages, { ...opts, onUsage });
+      },
+      moderate: (text) => ai.moderate(text, { onUsage }),
+    };
 
     this.aiChat = createAiChat(this);
     // Order matters for messages: moderation first (it can delete), leveling never consumes,
@@ -40,11 +65,37 @@ export class BotRuntime {
       createAutoReplies(this),
       this.aiChat,
       createWelcome(this),
+      createLogging(this),
+      createStarboard(this),
       createTickets(this),
       createGiveaways(this),
       createEconomy(this),
+      createSelfRoles(this),
+      createReminders(this),
       createCustomCommands(this),
     ];
+  }
+
+  stats() {
+    return dayStats(this.state);
+  }
+
+  bump(key, n = 1) {
+    this.stats()[key] += n;
+    this.state.save();
+  }
+
+  recordUsage(usage, cost) {
+    recordUsage(this.state, usage, cost);
+  }
+
+  // Push the dashboard's name and avatar to the Discord bot user. Discord rate-limits these heavily.
+  async syncProfile({ username, avatarUrl }) {
+    const user = this.client?.user;
+    if (!user) throw new Error("Start the bot first.");
+    if (username && username !== user.username) await user.setUsername(username.slice(0, 32));
+    if (avatarUrl) await user.setAvatar(avatarUrl);
+    this.onStatus("online", { tag: user.tag, avatar: user.displayAvatarURL() });
   }
 
   commandsJson() {
@@ -67,7 +118,10 @@ export class BotRuntime {
 
   async start() {
     this.onStatus("starting");
-    const client = new Client({ intents: intentsFor(this.spec), partials: [Partials.Channel] });
+    const client = new Client({
+      intents: intentsFor(this.spec),
+      partials: [Partials.Channel, Partials.Message, Partials.Reaction, Partials.GuildMember],
+    });
     this.client = client;
 
     client.once(Events.ClientReady, async () => {
@@ -87,9 +141,18 @@ export class BotRuntime {
 
     client.on(Events.MessageCreate, (message) => this.handleMessage(message));
     client.on(Events.InteractionCreate, (interaction) => this.handleInteraction(interaction));
+    const fanOut = (hook, label) => (...args) => {
+      for (const m of this.modules) m[hook]?.(...args)?.catch?.((e) => this.log(`${label} error: ${e.message}`));
+    };
     client.on(Events.GuildMemberAdd, (member) => {
-      for (const m of this.modules) m.onMemberAdd?.(member)?.catch?.((e) => this.log(`Welcome error: ${e.message}`));
+      this.bump("joins");
+      fanOut("onMemberAdd", "Member join")(member);
     });
+    client.on(Events.GuildMemberRemove, fanOut("onMemberRemove", "Member leave"));
+    client.on(Events.MessageDelete, fanOut("onMessageDelete", "Message delete"));
+    client.on(Events.MessageUpdate, fanOut("onMessageUpdate", "Message edit"));
+    client.on(Events.MessageReactionAdd, fanOut("onReaction", "Reaction"));
+    client.on(Events.MessageReactionRemove, fanOut("onReaction", "Reaction"));
     client.on(Events.Error, (e) => this.log(`Discord error: ${e.message}`));
     client.on(Events.ShardDisconnect, (event) => {
       if (event.code === 4014) this.fail(FRIENDLY_ERRORS.DisallowedIntents);
@@ -128,14 +191,17 @@ export class BotRuntime {
   }
 
   async handleMessage(message) {
-    if (message.author.bot || message.system) return;
+    if (message.author.bot || message.system || message.partial) return;
+    this.bump("messages");
     try {
       for (const m of this.modules) {
         if (m.onMessage && (await m.onMessage(message))) return;
       }
     } catch (e) {
-      this.log(`Error handling message: ${e.message}`);
-      await message.reply({ content: "Something went wrong on my end. Try again in a moment.", allowedMentions: { parse: [] } }).catch(() => {});
+      const limited = e instanceof LimitError;
+      if (!limited) this.log(`Error handling message: ${e.message}`);
+      const content = limited ? e.message : "Something went wrong on my end. Try again in a moment.";
+      await message.reply({ content, allowedMentions: { parse: [] } }).catch(() => {});
     }
   }
 
@@ -143,6 +209,7 @@ export class BotRuntime {
     try {
       if (interaction.isChatInputCommand()) {
         this.log(`/${interaction.commandName} by ${interaction.user.tag}`);
+        this.bump("commands");
         if (interaction.commandName === "help") return await this.help(interaction);
         for (const m of this.modules) {
           if (m.onCommand && (await m.onCommand(interaction))) return;
@@ -154,8 +221,9 @@ export class BotRuntime {
         }
       }
     } catch (e) {
-      this.log(`Error in /${interaction.commandName ?? interaction.customId}: ${e.message}`);
-      const reply = { content: "Something went wrong running that. Try again in a moment.", flags: MessageFlags.Ephemeral };
+      const limited = e instanceof LimitError;
+      if (!limited) this.log(`Error in /${interaction.commandName ?? interaction.customId}: ${e.message}`);
+      const reply = { content: limited ? e.message : "Something went wrong running that. Try again in a moment.", flags: MessageFlags.Ephemeral };
       if (interaction.deferred || interaction.replied) await interaction.followUp(reply).catch(() => {});
       else await interaction.reply(reply).catch(() => {});
     }
