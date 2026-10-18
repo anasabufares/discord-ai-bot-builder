@@ -1,0 +1,22 @@
+{
+  "name": "discord-ai-bot-builder",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Describe a Discord bot in plain English; AI builds it, a dashboard manages it, and a runner hosts it 24/7.",
+  "type": "module",
+  "main": "src/server.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node --test \"test/**/*.test.js\""
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.135.0",
+    "discord.js": "^14.27.0",
+    "express": "^5.3.0",
+    "zod": "^4.6.7"
+  }
+}
